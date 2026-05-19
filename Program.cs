@@ -37,6 +37,10 @@ public sealed class ConvertSettings : CommandSettings
     [Description("Read TSV data from standard input")]
     public bool Stdin { get; init; }
 
+    [CommandOption("--print")]
+    [Description("Print output file paths to stdout, one per line")]
+    public bool Print { get; init; }
+
     public bool UseStdin => Stdin || TsvPath == "-";
 }
 
@@ -44,9 +48,15 @@ public sealed class ConvertCommand : Command<ConvertSettings>
 {
     protected override int Execute(CommandContext context, ConvertSettings settings, CancellationToken cancellationToken)
     {
+        var stderr = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Out = new AnsiConsoleOutput(Console.Error),
+            Ansi = AnsiSupport.Yes
+        });
+
         if (settings.UseStdin && Console.IsInputRedirected == false)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] No piped input. Use: cat file.tsv | tsv2tiff");
+            stderr.MarkupLine("[red]Error:[/] No piped input. Use: cat file.tsv | tsv2tiff");
             return 1;
         }
 
@@ -63,7 +73,7 @@ public sealed class ConvertCommand : Command<ConvertSettings>
         {
             if (!File.Exists(settings.TsvPath))
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] TSV file not found: {settings.TsvPath}");
+                stderr.MarkupLine($"[red]Error:[/] TSV file not found: {settings.TsvPath}");
                 return 1;
             }
             entries = ParseTsv(File.OpenText(settings.TsvPath));
@@ -75,18 +85,19 @@ public sealed class ConvertCommand : Command<ConvertSettings>
         {
             if (!File.Exists(settings.FontPath))
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] Font file not found: {settings.FontPath}");
+                stderr.MarkupLine($"[red]Error:[/] Font file not found: {settings.FontPath}");
                 return 1;
             }
             typeface = SKTypeface.FromFile(settings.FontPath);
         }
         typeface ??= LoadEmbeddedFont();
 
-        AnsiConsole.MarkupLine($"[bold]Processing {pages.Count} page(s)...[/]");
+        stderr.MarkupLine($"[bold]Processing {pages.Count} page(s)...[/]");
 
         var pageBitmaps = new List<(int PageNum, SKBitmap Bitmap)>();
+        var outputPaths = new List<string>();
 
-        var progress = AnsiConsole.Progress();
+        var progress = stderr.Progress();
         progress.Start(ctx =>
         {
             var progressTask = ctx.AddTask("Rendering", maxValue: pages.Count);
@@ -145,7 +156,8 @@ public sealed class ConvertCommand : Command<ConvertSettings>
 
             string combinedPath = Path.Combine(outputDir, "combined.tiff");
             SaveAsTiffG4(combined, combinedPath);
-            AnsiConsole.MarkupLine($"[green]Done.[/] Combined image: {Path.GetFullPath(combinedPath)}");
+            outputPaths.Add(Path.GetFullPath(combinedPath));
+            stderr.MarkupLine($"[green]Done.[/] Combined image: {combinedPath}");
         }
         else
         {
@@ -153,10 +165,20 @@ public sealed class ConvertCommand : Command<ConvertSettings>
             {
                 string outputPath = Path.Combine(outputDir, $"page_{pageNum + 1}.tiff");
                 SaveAsTiffG4(bitmap, outputPath);
+                outputPaths.Add(Path.GetFullPath(outputPath));
                 bitmap.Dispose();
             }
-            AnsiConsole.MarkupLine($"[green]Done.[/] Saved to: {Path.GetFullPath(outputDir)}");
+            stderr.MarkupLine($"[green]Done.[/] Saved to: {Path.GetFullPath(outputDir)}");
         }
+
+        if (settings.Print)
+        {
+            foreach (var path in outputPaths)
+            {
+                Console.WriteLine(path);
+            }
+        }
+
         return 0;
     }
 
